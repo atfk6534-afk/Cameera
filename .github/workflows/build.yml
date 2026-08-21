@@ -23,7 +23,7 @@ jobs:
           set -euo pipefail
 
           if [ ! -f "photo_enhancer_4k.zip" ]; then
-            echo "::error::photo_enhancer_4k.zip not found."
+            echo "::error::photo_enhancer_4k.zip not found in repository root."
             exit 1
           fi
 
@@ -46,6 +46,7 @@ jobs:
 
       - name: Generate Android platform
         working-directory: photo_enhancer_4k
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -57,29 +58,27 @@ jobs:
               .
           fi
 
-      - name: Configure Android JVM
+      - name: Configure Android JVM compatibility
         working-directory: photo_enhancer_4k
         shell: bash
         run: |
           set -euo pipefail
 
-          # Use Flutter's temporary compatibility mode for
-          # projects/plugins that have not fully migrated to
-          # AGP 9 built-in Kotlin yet.
-          cat >> android/gradle.properties <<'EOF'
-
-          android.newDsl=false
-          android.builtInKotlin=false
-          EOF
+          {
+            echo ""
+            echo "android.newDsl=false"
+            echo "android.builtInKotlin=false"
+          } >> android/gradle.properties
 
           python3 <<'PY'
           from pathlib import Path
           import re
 
+          # Configure app module
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
 
-          # Remove deprecated kotlinOptions completely.
+          # Remove deprecated kotlinOptions
           s = re.sub(
               r'\n\s*kotlinOptions\s*\{.*?\n\s*\}',
               '',
@@ -87,22 +86,22 @@ jobs:
               flags=re.S
           )
 
-          # Java 17 + desugaring.
+          # Java 17
           compile_block = """compileOptions {
               sourceCompatibility = JavaVersion.VERSION_17
               targetCompatibility = JavaVersion.VERSION_17
               isCoreLibraryDesugaringEnabled = true
           }"""
 
-          s = re.sub(
-              r'compileOptions\s*\{.*?\n\s*\}',
-              compile_block,
-              s,
-              count=1,
-              flags=re.S
-          )
-
-          if "compileOptions {" not in s:
+          if re.search(r'compileOptions\s*\{', s):
+              s = re.sub(
+                  r'compileOptions\s*\{.*?\n\s*\}',
+                  compile_block,
+                  s,
+                  count=1,
+                  flags=re.S
+              )
+          else:
               s = s.replace(
                   "android {",
                   "android {\n    " +
@@ -110,7 +109,7 @@ jobs:
                   1
               )
 
-          # Modern Kotlin compilerOptions DSL.
+          # Modern Kotlin compilerOptions
           if "compilerOptions" not in s:
               s += """
 
@@ -123,7 +122,7 @@ jobs:
           }
           """
 
-          # Multidex.
+          # Multidex
           if "multiDexEnabled = true" not in s:
               s = s.replace(
                   "defaultConfig {",
@@ -131,7 +130,7 @@ jobs:
                   1
               )
 
-          # Core library desugaring.
+          # Desugaring
           dep = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
 
           if "desugar_jdk_libs" not in s:
@@ -145,6 +144,30 @@ jobs:
                   s += "\n\ndependencies {\n    " + dep + "\n}\n"
 
           p.write_text(s)
+
+          # IMPORTANT:
+          # tflite_flutter is a separate Android subproject.
+          # Its Java task was targeting JVM 1.8 while Kotlin targets 17.
+          # Force every JavaCompile task to JVM 17.
+          root = Path("android/build.gradle.kts")
+          rs = root.read_text()
+
+          marker = "// PHOTO_ENHANCER_JVM17_FIX"
+
+          if marker not in rs:
+              rs += f"""
+
+          {marker}
+          subprojects {{
+              tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {{
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+                  options.release.set(17)
+              }}
+          }}
+          """
+
+              root.write_text(rs)
           PY
 
       - name: Flutter Pub Get
