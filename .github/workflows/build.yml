@@ -2,12 +2,15 @@ name: Build APK
 
 on:
   push:
-    branches:
-      - main
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  JAVA_VERSION: "17"
+  FLUTTER_CHANNEL: "stable"
 
 jobs:
   build:
@@ -17,15 +20,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract Flutter project
+      - name: Extract project
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ ! -f "photo_enhancer_4k.zip" ]; then
-            echo "::error::photo_enhancer_4k.zip not found in repository root."
-            exit 1
-          fi
+          test -f photo_enhancer_4k.zip
 
           rm -rf photo_enhancer_4k
           unzip -q photo_enhancer_4k.zip -d .
@@ -36,21 +36,21 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Setup Flutter
+      - name: Setup Flutter Stable
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: ${{ env.FLUTTER_CHANNEL }}
           cache: true
 
-      - name: Generate Android platform
+      - name: Generate Android project
         working-directory: photo_enhancer_4k
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ ! -d "android" ]; then
+          if [ ! -d android ]; then
             flutter create \
               --platforms=android \
               --org com.lahan \
@@ -58,27 +58,27 @@ jobs:
               .
           fi
 
-      - name: Configure Android JVM compatibility
+      - name: Configure Android
         working-directory: photo_enhancer_4k
         shell: bash
         run: |
           set -euo pipefail
 
-          {
-            echo ""
-            echo "android.newDsl=false"
-            echo "android.builtInKotlin=false"
-          } >> android/gradle.properties
+          cat >> android/gradle.properties <<'EOF'
+
+          android.newDsl=false
+          android.builtInKotlin=false
+          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+          EOF
 
           python3 <<'PY'
           from pathlib import Path
           import re
 
-          # Configure app module
-          p = Path("android/app/build.gradle.kts")
-          s = p.read_text()
+          app = Path("android/app/build.gradle.kts")
+          s = app.read_text()
 
-          # Remove deprecated kotlinOptions
+          # Remove deprecated kotlinOptions.
           s = re.sub(
               r'\n\s*kotlinOptions\s*\{.*?\n\s*\}',
               '',
@@ -86,8 +86,8 @@ jobs:
               flags=re.S
           )
 
-          # Java 17
-          compile_block = """compileOptions {
+          # Java 17 + desugaring.
+          java_block = """compileOptions {
               sourceCompatibility = JavaVersion.VERSION_17
               targetCompatibility = JavaVersion.VERSION_17
               isCoreLibraryDesugaringEnabled = true
@@ -96,7 +96,7 @@ jobs:
           if re.search(r'compileOptions\s*\{', s):
               s = re.sub(
                   r'compileOptions\s*\{.*?\n\s*\}',
-                  compile_block,
+                  java_block,
                   s,
                   count=1,
                   flags=re.S
@@ -105,11 +105,41 @@ jobs:
               s = s.replace(
                   "android {",
                   "android {\n    " +
-                  compile_block.replace("\n", "\n    "),
+                  java_block.replace("\n", "\n    "),
                   1
               )
 
-          # Modern Kotlin compilerOptions
+          # tflite_flutter 0.12.x requires API 26+.
+          if re.search(r'minSdk\s*=\s*[^\n]+', s):
+              s = re.sub(
+                  r'minSdk\s*=\s*[^\n]+',
+                  'minSdk = 26',
+                  s,
+                  count=1
+              )
+          elif "minSdkVersion" in s:
+              s = re.sub(
+                  r'minSdkVersion\s*=\s*[^\n]+',
+                  'minSdkVersion = 26',
+                  s,
+                  count=1
+              )
+          else:
+              s = s.replace(
+                  "defaultConfig {",
+                  "defaultConfig {\n        minSdk = 26",
+                  1
+              )
+
+          # Multidex.
+          if "multiDexEnabled = true" not in s:
+              s = s.replace(
+                  "defaultConfig {",
+                  "defaultConfig {\n        multiDexEnabled = true",
+                  1
+              )
+
+          # Modern Kotlin compiler DSL.
           if "compilerOptions" not in s:
               s += """
 
@@ -122,42 +152,37 @@ jobs:
           }
           """
 
-          # Multidex
-          if "multiDexEnabled = true" not in s:
-              s = s.replace(
-                  "defaultConfig {",
-                  "defaultConfig {\n        multiDexEnabled = true",
-                  1
-              )
-
-          # Desugaring
-          dep = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
+          # Core library desugaring.
+          desugar = (
+              'coreLibraryDesugaring('
+              '"com.android.tools:desugar_jdk_libs:2.1.4")'
+          )
 
           if "desugar_jdk_libs" not in s:
               if "dependencies {" in s:
                   s = s.replace(
                       "dependencies {",
-                      "dependencies {\n    " + dep,
+                      "dependencies {\n    " + desugar,
                       1
                   )
               else:
-                  s += "\n\ndependencies {\n    " + dep + "\n}\n"
+                  s += "\n\ndependencies {\n    " + desugar + "\n}\n"
 
-          p.write_text(s)
+          app.write_text(s)
 
           # IMPORTANT:
-          # tflite_flutter is a separate Android subproject.
-          # Its Java task was targeting JVM 1.8 while Kotlin targets 17.
-          # Force every JavaCompile task to JVM 17.
+          # tflite_flutter is a separate Gradle subproject.
+          # Force all JavaCompile tasks to JVM 17 without afterEvaluate.
           root = Path("android/build.gradle.kts")
-          rs = root.read_text()
+          r = root.read_text()
 
-          marker = "// PHOTO_ENHANCER_JVM17_FIX"
+          marker = "// PHOTO_ENHANCER_GLOBAL_JVM17_FIX"
 
-          if marker not in rs:
-              rs += f"""
+          if marker not in r:
+              r += f"""
 
           {marker}
+
           subprojects {{
               tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {{
                   sourceCompatibility = "17"
@@ -167,33 +192,52 @@ jobs:
           }}
           """
 
-              root.write_text(rs)
+              root.write_text(r)
           PY
 
-      - name: Flutter Pub Get
+      - name: Resolve dependencies
         working-directory: photo_enhancer_4k
         run: flutter pub get
 
-      - name: Flutter Analyze
+      - name: Verify plugin versions
+        working-directory: photo_enhancer_4k
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          flutter pub deps --style=compact |
+            grep -E \
+            'image_picker|image_picker_android|share_plus|tflite_flutter' \
+            || true
+
+      - name: Analyze
         working-directory: photo_enhancer_4k
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
         continue-on-error: true
 
-      - name: Flutter Test
+      - name: Test
         working-directory: photo_enhancer_4k
         run: flutter test
 
-      - name: Flutter Clean
+      - name: Clean build outputs
         working-directory: photo_enhancer_4k
         run: flutter clean
 
-      - name: Flutter Pub Get Again
+      - name: Clear Gradle caches
+        shell: bash
+        run: |
+          rm -rf ~/.gradle/caches
+
+      - name: Resolve dependencies again
         working-directory: photo_enhancer_4k
         run: flutter pub get
 
-      - name: Build Release APK
+      - name: Build Release APKs
         working-directory: photo_enhancer_4k
-        run: flutter build apk --release --split-per-abi
+        run: |
+          flutter build apk \
+            --release \
+            --split-per-abi
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
