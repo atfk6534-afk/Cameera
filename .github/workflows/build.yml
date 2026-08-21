@@ -23,17 +23,14 @@ jobs:
           set -euo pipefail
 
           if [ ! -f "photo_enhancer_4k.zip" ]; then
-            echo "::error::photo_enhancer_4k.zip not found in repository root."
+            echo "::error::photo_enhancer_4k.zip not found."
             exit 1
           fi
 
           rm -rf photo_enhancer_4k
           unzip -q photo_enhancer_4k.zip -d .
 
-          test -f photo_enhancer_4k/pubspec.yaml || {
-            echo "::error::pubspec.yaml was not found after extraction."
-            exit 1
-          }
+          test -f photo_enhancer_4k/pubspec.yaml
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -47,14 +44,8 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Show tool versions
-        run: |
-          flutter --version
-          java -version
-
       - name: Generate Android platform
         working-directory: photo_enhancer_4k
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -66,18 +57,20 @@ jobs:
               .
           fi
 
-      - name: Fix Java and Kotlin JVM targets
+      - name: Configure Android JVM
         working-directory: photo_enhancer_4k
         shell: bash
         run: |
           set -euo pipefail
 
-          FILE="android/app/build.gradle.kts"
+          # Use Flutter's temporary compatibility mode for
+          # projects/plugins that have not fully migrated to
+          # AGP 9 built-in Kotlin yet.
+          cat >> android/gradle.properties <<'EOF'
 
-          test -f "$FILE" || {
-            echo "::error::$FILE not found."
-            exit 1
-          }
+          android.newDsl=false
+          android.builtInKotlin=false
+          EOF
 
           python3 <<'PY'
           from pathlib import Path
@@ -86,32 +79,30 @@ jobs:
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
 
-          # Multidex
-          if "multiDexEnabled = true" not in s:
-              s = s.replace(
-                  "defaultConfig {",
-                  "defaultConfig {\n        multiDexEnabled = true",
-                  1
-              )
+          # Remove deprecated kotlinOptions completely.
+          s = re.sub(
+              r'\n\s*kotlinOptions\s*\{.*?\n\s*\}',
+              '',
+              s,
+              flags=re.S
+          )
 
-          # Force Java compilation to JVM 17
+          # Java 17 + desugaring.
           compile_block = """compileOptions {
-          sourceCompatibility = JavaVersion.VERSION_17
-          targetCompatibility = JavaVersion.VERSION_17
-          isCoreLibraryDesugaringEnabled = true
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+              isCoreLibraryDesugaringEnabled = true
           }"""
 
-          pattern = r'compileOptions\s*\{.*?\n\s*\}'
+          s = re.sub(
+              r'compileOptions\s*\{.*?\n\s*\}',
+              compile_block,
+              s,
+              count=1,
+              flags=re.S
+          )
 
-          if re.search(pattern, s, flags=re.S):
-              s = re.sub(
-                  pattern,
-                  compile_block,
-                  s,
-                  count=1,
-                  flags=re.S
-              )
-          else:
+          if "compileOptions {" not in s:
               s = s.replace(
                   "android {",
                   "android {\n    " +
@@ -119,64 +110,42 @@ jobs:
                   1
               )
 
-          # Force Kotlin compilation to JVM 17
-          kotlin_block = """kotlinOptions {
-          jvmTarget = JavaVersion.VERSION_17.toString()
-          }"""
-
-          pattern_kotlin = r'kotlinOptions\s*\{.*?\n\s*\}'
-
-          if re.search(pattern_kotlin, s, flags=re.S):
-              s = re.sub(
-                  pattern_kotlin,
-                  kotlin_block,
-                  s,
-                  count=1,
-                  flags=re.S
-              )
-          else:
-              s = s.replace(
-                  "android {",
-                  "android {\n    " +
-                  kotlin_block.replace("\n", "\n    "),
-                  1
-              )
-
-          # Kotlin Java 17 toolchain
-          if "jvmToolchain(17)" not in s:
+          # Modern Kotlin compilerOptions DSL.
+          if "compilerOptions" not in s:
               s += """
 
           kotlin {
-              jvmToolchain(17)
+              compilerOptions {
+                  jvmTarget.set(
+                      org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+                  )
+              }
           }
           """
 
-          # Core library desugaring
-          dependency = (
-              'coreLibraryDesugaring('
-              '"com.android.tools:desugar_jdk_libs:2.1.4")'
-          )
+          # Multidex.
+          if "multiDexEnabled = true" not in s:
+              s = s.replace(
+                  "defaultConfig {",
+                  "defaultConfig {\n        multiDexEnabled = true",
+                  1
+              )
+
+          # Core library desugaring.
+          dep = 'coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
 
           if "desugar_jdk_libs" not in s:
               if "dependencies {" in s:
                   s = s.replace(
                       "dependencies {",
-                      "dependencies {\n    " + dependency,
+                      "dependencies {\n    " + dep,
                       1
                   )
               else:
-                  s += f"""
-
-          dependencies {{
-              {dependency}
-          }}
-          """
+                  s += "\n\ndependencies {\n    " + dep + "\n}\n"
 
           p.write_text(s)
           PY
-
-          echo "===== FINAL ANDROID CONFIG ====="
-          sed -n '1,220p' "$FILE"
 
       - name: Flutter Pub Get
         working-directory: photo_enhancer_4k
@@ -201,10 +170,7 @@ jobs:
 
       - name: Build Release APK
         working-directory: photo_enhancer_4k
-        run: |
-          flutter build apk \
-            --release \
-            --split-per-abi
+        run: flutter build apk --release --split-per-abi
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
