@@ -63,7 +63,6 @@ jobs:
           GROOVY=android/app/build.gradle
 
           if [ -f "$KTS" ]; then
-            echo "✅ لقينا Kotlin DSL: $KTS"
             GRADLE="$KTS"
             if ! grep -q "multiDexEnabled" "$GRADLE"; then
               sed -i '/defaultConfig {/a\        multiDexEnabled = true' "$GRADLE"
@@ -75,7 +74,6 @@ jobs:
               printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")\n}\n' >> "$GRADLE"
             fi
           elif [ -f "$GROOVY" ]; then
-            echo "✅ لقينا Groovy DSL: $GROOVY"
             GRADLE="$GROOVY"
             if ! grep -q "multiDexEnabled" "$GRADLE"; then
               sed -i '/defaultConfig {/a\        multiDexEnabled true' "$GRADLE"
@@ -87,7 +85,7 @@ jobs:
               printf '\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"\n}\n' >> "$GRADLE"
             fi
           else
-            echo "❌ مفيش android/app/build.gradle ولا build.gradle.kts — التوليد فشل."
+            echo "❌ مفيش android/app/build.gradle ولا build.gradle.kts"
             exit 1
           fi
 
