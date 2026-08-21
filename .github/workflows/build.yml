@@ -89,6 +89,60 @@ jobs:
             exit 1
           fi
 
+      - name: توحيد JVM Target (17) لكل الموديولز والباكدجات
+        working-directory: photo_enhancer_4k
+        run: |
+          ROOT_KTS=android/build.gradle.kts
+          ROOT_GROOVY=android/build.gradle
+
+          if [ -f "$ROOT_KTS" ]; then
+            echo "✅ إضافة توحيد JVM Target لـ Kotlin DSL"
+            {
+              echo ''
+              echo 'subprojects {'
+              echo '    afterEvaluate {'
+              echo '        extensions.findByType(org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension::class.java)?.apply {'
+              echo '            jvmToolchain(17)'
+              echo '        }'
+              echo '        extensions.findByType(com.android.build.gradle.BaseExtension::class.java)?.apply {'
+              echo '            compileOptions {'
+              echo '                sourceCompatibility = JavaVersion.VERSION_17'
+              echo '                targetCompatibility = JavaVersion.VERSION_17'
+              echo '            }'
+              echo '        }'
+              echo '    }'
+              echo '}'
+            } >> "$ROOT_KTS"
+          elif [ -f "$ROOT_GROOVY" ]; then
+            echo "✅ إضافة توحيد JVM Target لـ Groovy DSL"
+            {
+              echo ''
+              echo 'subprojects {'
+              echo '    afterEvaluate { proj ->'
+              echo '        if (proj.plugins.hasPlugin("com.android.library") || proj.plugins.hasPlugin("com.android.application")) {'
+              echo '            proj.android {'
+              echo '                compileOptions {'
+              echo '                    sourceCompatibility JavaVersion.VERSION_17'
+              echo '                    targetCompatibility JavaVersion.VERSION_17'
+              echo '                }'
+              echo '            }'
+              echo '        }'
+              echo '        proj.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {'
+              echo '            kotlinOptions {'
+              echo '                jvmTarget = "17"'
+              echo '            }'
+              echo '        }'
+              echo '        proj.plugins.withId("org.jetbrains.kotlin.android") {'
+              echo '            proj.extensions.getByName("kotlin").jvmToolchain(17)'
+              echo '        }'
+              echo '    }'
+              echo '}'
+            } >> "$ROOT_GROOVY"
+          else
+            echo "❌ مفيش android/build.gradle ولا build.gradle.kts في الروت"
+            exit 1
+          fi
+
       - name: تثبيت الباكدجات
         working-directory: photo_enhancer_4k
         run: flutter pub get
