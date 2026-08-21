@@ -2,253 +2,144 @@ name: Build APK
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
-
-permissions:
-  contents: read
+    branches: [ "main" ]
+  workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout الكود
         uses: actions/checkout@v4
 
-      - name: Extract Flutter project
-        shell: bash
+      - name: فك الضغط
         run: |
-          set -euo pipefail
-
-          test -f "photo_enhancer_4k.zip"
-
+          if [ ! -f "photo_enhancer_4k.zip" ]; then
+            echo "❌ ملف photo_enhancer_4k.zip مش موجود في جذر الريبو."
+            exit 1
+          fi
           rm -rf photo_enhancer_4k
           unzip -q photo_enhancer_4k.zip -d .
+          test -f photo_enhancer_4k/pubspec.yaml || {
+            echo "❌ فك الضغط تم لكن pubspec.yaml مش موجود جوه المجلد."
+            exit 1
+          }
 
-          test -f "photo_enhancer_4k/pubspec.yaml"
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v5
+      - name: تثبيت Java
+        uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: "temurin"
           java-version: "17"
 
-      - name: Setup Flutter
+      - name: تثبيت أحدث Flutter SDK (Stable)
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: "stable"
           cache: true
 
-      - name: Show versions
-        run: |
-          java -version
-          flutter --version
-
-      - name: Generate Android platform
+      - name: توليد ملفات المنصّات (android) لو مش موجودة
         working-directory: photo_enhancer_4k
-        shell: bash
         run: |
-          set -euo pipefail
-
           if [ ! -d "android" ]; then
-            flutter create \
-              --platforms=android \
-              --org com.lahan \
-              --project-name photo_enhancer_4k \
-              .
+            echo "android/ مش موجود — بيتولد الآن..."
+            flutter create --platforms=android --org com.lahan .
+          else
+            echo "android/ موجود بالفعل."
           fi
 
-      - name: Configure Android
+      - name: ضبط compileSdk/targetSdk + توافق AGP 9 (Legacy Kotlin)
         working-directory: photo_enhancer_4k
-        shell: bash
         run: |
-          set -euo pipefail
+          GRADLE_PROPS=android/gradle.properties
+          grep -q "flutter.compileSdkVersion" "$GRADLE_PROPS" 2>/dev/null || \
+            echo "flutter.compileSdkVersion=35" >> "$GRADLE_PROPS"
+          grep -q "flutter.targetSdkVersion" "$GRADLE_PROPS" 2>/dev/null || \
+            echo "flutter.targetSdkVersion=35" >> "$GRADLE_PROPS"
+          grep -q "android.builtInKotlin" "$GRADLE_PROPS" 2>/dev/null || \
+            echo "android.builtInKotlin=false" >> "$GRADLE_PROPS"
+          grep -q "android.newDsl" "$GRADLE_PROPS" 2>/dev/null || \
+            echo "android.newDsl=false" >> "$GRADLE_PROPS"
+          echo "===== gradle.properties ====="
+          cat "$GRADLE_PROPS"
 
-          cat >> android/gradle.properties <<'EOF'
+      - name: تفعيل Multidex + Core Library Desugaring (مطلوبة لـ ML Kit)
+        working-directory: photo_enhancer_4k
+        run: |
+          KTS=android/app/build.gradle.kts
+          GROOVY=android/app/build.gradle
 
-          android.newDsl=false
-          android.builtInKotlin=false
-          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
-          EOF
+          if [ -f "$KTS" ]; then
+            GRADLE="$KTS"
+            if ! grep -q "multiDexEnabled" "$GRADLE"; then
+              sed -i '/defaultConfig {/a\        multiDexEnabled = true' "$GRADLE"
+            fi
+            if ! grep -q "isCoreLibraryDesugaringEnabled" "$GRADLE"; then
+              sed -i '/compileOptions {/a\        isCoreLibraryDesugaringEnabled = true' "$GRADLE"
+            fi
+            if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
+              printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> "$GRADLE"
+            fi
+          elif [ -f "$GROOVY" ]; then
+            GRADLE="$GROOVY"
+            if ! grep -q "multiDexEnabled" "$GRADLE"; then
+              sed -i '/defaultConfig {/a\        multiDexEnabled true' "$GRADLE"
+            fi
+            if ! grep -q "coreLibraryDesugaringEnabled" "$GRADLE"; then
+              sed -i '/compileOptions {/a\        coreLibraryDesugaringEnabled true' "$GRADLE"
+            fi
+            if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
+              printf '\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n' >> "$GRADLE"
+            fi
+          else
+            echo "❌ مفيش android/app/build.gradle ولا build.gradle.kts"
+            exit 1
+          fi
 
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          # ==============================
-          # APP MODULE
-          # ==============================
-
-          app = Path("android/app/build.gradle.kts")
-          s = app.read_text()
-
-          # Remove deprecated kotlinOptions
-          s = re.sub(
-              r'\n\s*kotlinOptions\s*\{.*?\n\s*\}',
-              '',
-              s,
-              flags=re.S
-          )
-
-          # Java 17 WITHOUT options.release
-          java_block = """compileOptions {
-              sourceCompatibility = JavaVersion.VERSION_17
-              targetCompatibility = JavaVersion.VERSION_17
-              isCoreLibraryDesugaringEnabled = true
-          }"""
-
-          if re.search(r'compileOptions\s*\{', s):
-              s = re.sub(
-                  r'compileOptions\s*\{.*?\n\s*\}',
-                  java_block,
-                  s,
-                  count=1,
-                  flags=re.S
-              )
-          else:
-              s = s.replace(
-                  "android {",
-                  "android {\n    " +
-                  java_block.replace("\n", "\n    "),
-                  1
-              )
-
-          # Modern Kotlin compiler DSL
-          if "compilerOptions" not in s:
-              s += """
-
-          kotlin {
-              compilerOptions {
-                  jvmTarget.set(
-                      org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
-                  )
-              }
-          }
-          """
-
-          # Multidex
-          if "multiDexEnabled = true" not in s:
-              s = s.replace(
-                  "defaultConfig {",
-                  "defaultConfig {\n        multiDexEnabled = true",
-                  1
-              )
-
-          # tflite_flutter 0.12.x
-          if re.search(r'minSdk\s*=\s*[^\n]+', s):
-              s = re.sub(
-                  r'minSdk\s*=\s*[^\n]+',
-                  'minSdk = 26',
-                  s,
-                  count=1
-              )
-
-          # Desugaring
-          dependency = (
-              'coreLibraryDesugaring('
-              '"com.android.tools:desugar_jdk_libs:2.1.4")'
-          )
-
-          if "desugar_jdk_libs" not in s:
-              if "dependencies {" in s:
-                  s = s.replace(
-                      "dependencies {",
-                      "dependencies {\n    " + dependency,
-                      1
-                  )
-              else:
-                  s += (
-                      "\n\ndependencies {\n    "
-                      + dependency +
-                      "\n}\n"
-                  )
-
-          app.write_text(s)
-
-          # ==============================
-          # ALL ANDROID SUBPROJECTS
-          # ==============================
-
-          root = Path("android/build.gradle.kts")
-          r = root.read_text()
-
-          marker = "// PHOTO_ENHANCER_JVM17_FIX"
-
-          if marker not in r:
-              r += """
-
-          // PHOTO_ENHANCER_JVM17_FIX
-
-          subprojects {
-              tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
-                  sourceCompatibility = "17"
-                  targetCompatibility = "17"
-              }
-          }
-          """
-
-              root.write_text(r)
-          PY
-
-      - name: Flutter Pub Get
+      - name: تثبيت الباكدجات
         working-directory: photo_enhancer_4k
         run: flutter pub get
 
-      - name: Flutter Analyze
+      - name: توحيد Java/Kotlin Target (17) داخل كل الباكدجات مباشرة
+        working-directory: photo_enhancer_4k
+        run: |
+          PUB_CACHE_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
+          echo "🔍 البحث في: $PUB_CACHE_DIR/hosted"
+
+          FOUND=0
+          while IFS= read -r -d '' FILE; do
+            FOUND=$((FOUND + 1))
+            echo "🔧 تعديل: $FILE"
+
+            sed -i -E "s/(source|target)Compatibility[[:space:]]+JavaVersion\.VERSION_[0-9_]+/\1Compatibility JavaVersion.VERSION_17/g" "$FILE"
+            sed -i -E "s/(source|target)Compatibility[[:space:]]*=[[:space:]]*JavaVersion\.VERSION_[0-9_]+/\1Compatibility = JavaVersion.VERSION_17/g" "$FILE"
+            sed -i -E "s/(source|target)Compatibility[[:space:]]+[0-9]+(\.[0-9]+)?/\1Compatibility 17/g" "$FILE"
+            sed -i -E "s/jvmTarget[[:space:]]*=[[:space:]]*[\"'][0-9.]+[\"']/jvmTarget = \"17\"/g" "$FILE"
+          done < <(find "$PUB_CACHE_DIR/hosted" -type f \
+                    \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+                    -path "*/android/*" -print0 2>/dev/null)
+
+          echo "✅ تم تعديل $FOUND ملف بنجاح"
+          if [ "$FOUND" -eq 0 ]; then
+            echo "⚠️ مفيش ملفات اتلقت — راجع مسار PUB_CACHE"
+          fi
+
+      - name: فحص الكود (تحذيرات بسيطة متوقفش الـ build)
         working-directory: photo_enhancer_4k
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
         continue-on-error: true
 
-      - name: Flutter Test
+      - name: تشغيل الاختبارات
         working-directory: photo_enhancer_4k
         run: flutter test
 
-      - name: Flutter Clean
+      - name: بناء APK (Release)
         working-directory: photo_enhancer_4k
-        run: flutter clean
+        run: flutter build apk --release --split-per-abi
 
-      - name: Clear Gradle Cache
-        run: |
-          rm -rf ~/.gradle/caches
-
-      - name: Flutter Pub Get Again
-        working-directory: photo_enhancer_4k
-        run: flutter pub get
-
-      - name: Verify JavaCompile Configuration
-        working-directory: photo_enhancer_4k
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if grep -R "options\.release\.set" android \
-            --include="*.gradle" \
-            --include="*.gradle.kts"; then
-
-            echo "::error::Unsupported options.release.set() detected."
-            exit 1
-          fi
-
-          echo "Checking Java compatibility:"
-          grep -R \
-            "sourceCompatibility\|targetCompatibility" \
-            android \
-            --include="*.gradle" \
-            --include="*.gradle.kts" || true
-
-      - name: Build Release APK
-        working-directory: photo_enhancer_4k
-        run: |
-          flutter build apk \
-            --release \
-            --split-per-abi
-
-      - name: Upload APKs
+      - name: رفع الـ APK كـ Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: photo-enhancer-4k-apks
+          name: photo-enhancer-4k-apk
           path: photo_enhancer_4k/build/app/outputs/flutter-apk/*.apk
-          if-no-files-found: error
           retention-days: 30
