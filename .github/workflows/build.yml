@@ -1,0 +1,91 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: photo_enhancer_4k
+
+    steps:
+      - name: Checkout الكود
+        uses: actions/checkout@v4
+        with:
+          # الخطوات الجاية شغالة جوه photo_enhancer_4k/ اللي لسه مش موجود،
+          # فبنرجع للـ root مؤقتًا في خطوة فك الضغط بس
+          path: repo
+
+      - name: التأكد من وجود الملف المضغوط
+        working-directory: repo
+        run: |
+          if [ ! -f "photo_enhancer_4k.zip" ]; then
+            echo "❌ ملف photo_enhancer_4k.zip مش موجود في جذر الريبو."
+            echo "تأكد إنك رفعته بنفس الاسم ده بالظبط، أو غيّر الاسم هنا."
+            exit 1
+          fi
+          echo "✅ الملف موجود."
+
+      - name: فك الضغط
+        working-directory: repo
+        run: |
+          unzip -o photo_enhancer_4k.zip -d .
+          test -f photo_enhancer_4k/pubspec.yaml || {
+            echo "❌ فك الضغط تم لكن pubspec.yaml مش موجود — تأكد من محتوى الملف."
+            exit 1
+          }
+          mv photo_enhancer_4k ../photo_enhancer_4k
+
+      - name: تثبيت Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: تثبيت Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: "stable"
+          cache: true
+
+      - name: توليد ملفات المنصّات (android) لو مش موجودة
+        run: |
+          if [ ! -d "android" ]; then
+            echo "android/ مش موجود — بيتولد الآن..."
+            flutter create --platforms=android --org com.lahan .
+          fi
+
+      - name: تفعيل Multidex + Core Library Desugaring (مطلوبة لـ ML Kit)
+        run: |
+          GRADLE=android/app/build.gradle
+          if ! grep -q "multiDexEnabled" "$GRADLE"; then
+            sed -i '/defaultConfig {/a\        multiDexEnabled true' "$GRADLE"
+          fi
+          if ! grep -q "coreLibraryDesugaringEnabled" "$GRADLE"; then
+            sed -i '/compileOptions {/a\        coreLibraryDesugaringEnabled true' "$GRADLE"
+          fi
+          if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
+            echo -e "\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'\n}" >> "$GRADLE"
+          fi
+
+      - name: تثبيت الباكدجات
+        run: flutter pub get
+
+      - name: فحص الكود (بدون إيقاف الـ build لو فيه تحذيرات بسيطة)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        continue-on-error: true
+
+      - name: بناء APK (Release)
+        run: flutter build apk --release --split-per-abi
+
+      - name: رفع الـ APK كـ Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-enhancer-4k-apk
+          path: photo_enhancer_4k/build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
