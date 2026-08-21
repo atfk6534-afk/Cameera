@@ -13,7 +13,6 @@ jobs:
       - name: Checkout الكود
         uses: actions/checkout@v4
 
-      # فك ضغط الملف اللي رفعته على الريبو
       - name: فك الضغط
         run: |
           if [ ! -f "photo_enhancer_4k.zip" ]; then
@@ -32,8 +31,6 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      # من غير flutter-version ثابت — بتاخد أحدث نسخة Stable
-      # (النسخة القديمة 3.24.0 فيها باج بيبوظ gal package)
       - name: تثبيت أحدث Flutter SDK (Stable)
         uses: subosito/flutter-action@v2
         with:
@@ -62,15 +59,36 @@ jobs:
       - name: تفعيل Multidex + Core Library Desugaring (مطلوبة لـ ML Kit)
         working-directory: photo_enhancer_4k
         run: |
-          GRADLE=android/app/build.gradle
-          if ! grep -q "multiDexEnabled" "$GRADLE"; then
-            sed -i '/defaultConfig {/a\        multiDexEnabled true' "$GRADLE"
-          fi
-          if ! grep -q "coreLibraryDesugaringEnabled" "$GRADLE"; then
-            sed -i '/compileOptions {/a\        coreLibraryDesugaringEnabled true' "$GRADLE"
-          fi
-          if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
-            echo -e "\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'\n}" >> "$GRADLE"
+          KTS=android/app/build.gradle.kts
+          GROOVY=android/app/build.gradle
+
+          if [ -f "$KTS" ]; then
+            echo "✅ لقينا Kotlin DSL: $KTS"
+            GRADLE="$KTS"
+            if ! grep -q "multiDexEnabled" "$GRADLE"; then
+              sed -i '/defaultConfig {/a\        multiDexEnabled = true' "$GRADLE"
+            fi
+            if ! grep -q "isCoreLibraryDesugaringEnabled" "$GRADLE"; then
+              sed -i '/compileOptions {/a\        isCoreLibraryDesugaringEnabled = true' "$GRADLE"
+            fi
+            if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
+              printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")\n}\n' >> "$GRADLE"
+            fi
+          elif [ -f "$GROOVY" ]; then
+            echo "✅ لقينا Groovy DSL: $GROOVY"
+            GRADLE="$GROOVY"
+            if ! grep -q "multiDexEnabled" "$GRADLE"; then
+              sed -i '/defaultConfig {/a\        multiDexEnabled true' "$GRADLE"
+            fi
+            if ! grep -q "coreLibraryDesugaringEnabled" "$GRADLE"; then
+              sed -i '/compileOptions {/a\        coreLibraryDesugaringEnabled true' "$GRADLE"
+            fi
+            if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
+              printf '\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"\n}\n' >> "$GRADLE"
+            fi
+          else
+            echo "❌ مفيش android/app/build.gradle ولا build.gradle.kts — التوليد فشل."
+            exit 1
           fi
 
       - name: تثبيت الباكدجات
