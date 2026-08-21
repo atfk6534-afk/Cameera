@@ -2,167 +2,124 @@ name: Build APK
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch: {}
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout الكود
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: فك الضغط
+      - name: Extract Flutter project
         run: |
+          set -e
+
           if [ ! -f "photo_enhancer_4k.zip" ]; then
-            echo "❌ ملف photo_enhancer_4k.zip مش موجود في جذر الريبو."
+            echo "ERROR: photo_enhancer_4k.zip not found."
             exit 1
           fi
-          unzip -o photo_enhancer_4k.zip -d .
-          test -f photo_enhancer_4k/pubspec.yaml || {
-            echo "❌ فك الضغط تم لكن pubspec.yaml مش موجود جوه المجلد."
-            exit 1
-          }
 
-      - name: تثبيت Java
+          rm -rf photo_enhancer_4k
+          unzip -q photo_enhancer_4k.zip -d .
+
+          test -f photo_enhancer_4k/pubspec.yaml
+
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
+          distribution: temurin
           java-version: "17"
+          cache: gradle
 
-      - name: تثبيت أحدث Flutter SDK (Stable)
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
+          channel: stable
           cache: true
 
-      - name: توليد ملفات المنصّات (android) لو مش موجودة
+      - name: Generate Android platform
         working-directory: photo_enhancer_4k
         run: |
           if [ ! -d "android" ]; then
-            echo "android/ مش موجود — بيتولد الآن..."
-            flutter create --platforms=android --org com.lahan .
-          else
-            echo "android/ موجود بالفعل."
+            flutter create \
+              --platforms=android \
+              --org com.lahan \
+              --project-name photo_enhancer_4k \
+              .
           fi
 
-      - name: ضبط compileSdk/targetSdk صراحة
+      - name: Configure Android
         working-directory: photo_enhancer_4k
         run: |
-          GRADLE_PROPS=android/gradle.properties
-          grep -q "flutter.compileSdkVersion" "$GRADLE_PROPS" 2>/dev/null || \
-            echo "flutter.compileSdkVersion=35" >> "$GRADLE_PROPS"
-          grep -q "flutter.targetSdkVersion" "$GRADLE_PROPS" 2>/dev/null || \
-            echo "flutter.targetSdkVersion=35" >> "$GRADLE_PROPS"
+          python3 <<'PY'
+          from pathlib import Path
 
-      - name: تفعيل Multidex + Core Library Desugaring (مطلوبة لـ ML Kit)
-        working-directory: photo_enhancer_4k
-        run: |
-          KTS=android/app/build.gradle.kts
-          GROOVY=android/app/build.gradle
+          p = Path("android/app/build.gradle.kts")
+          s = p.read_text()
 
-          if [ -f "$KTS" ]; then
-            GRADLE="$KTS"
-            if ! grep -q "multiDexEnabled" "$GRADLE"; then
-              sed -i '/defaultConfig {/a\        multiDexEnabled = true' "$GRADLE"
-            fi
-            if ! grep -q "isCoreLibraryDesugaringEnabled" "$GRADLE"; then
-              sed -i '/compileOptions {/a\        isCoreLibraryDesugaringEnabled = true' "$GRADLE"
-            fi
-            if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
-              printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")\n}\n' >> "$GRADLE"
-            fi
-          elif [ -f "$GROOVY" ]; then
-            GRADLE="$GROOVY"
-            if ! grep -q "multiDexEnabled" "$GRADLE"; then
-              sed -i '/defaultConfig {/a\        multiDexEnabled true' "$GRADLE"
-            fi
-            if ! grep -q "coreLibraryDesugaringEnabled" "$GRADLE"; then
-              sed -i '/compileOptions {/a\        coreLibraryDesugaringEnabled true' "$GRADLE"
-            fi
-            if ! grep -q "desugar_jdk_libs" "$GRADLE"; then
-              printf '\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"\n}\n' >> "$GRADLE"
-            fi
-          else
-            echo "❌ مفيش android/app/build.gradle ولا build.gradle.kts"
-            exit 1
-          fi
+          if "multiDexEnabled = true" not in s:
+              s = s.replace(
+                  "defaultConfig {",
+                  "defaultConfig {\n        multiDexEnabled = true",
+                  1
+              )
 
-      - name: توحيد JVM Target (17) لكل الموديولز والباكدجات
-        working-directory: photo_enhancer_4k
-        run: |
-          ROOT_KTS=android/build.gradle.kts
-          ROOT_GROOVY=android/build.gradle
+          if "isCoreLibraryDesugaringEnabled = true" not in s:
+              s = s.replace(
+                  "compileOptions {",
+                  "compileOptions {\n        isCoreLibraryDesugaringEnabled = true",
+                  1
+              )
 
-          if [ -f "$ROOT_KTS" ]; then
-            echo "✅ إضافة توحيد JVM Target لـ Kotlin DSL"
-            {
-              echo ''
-              echo 'subprojects {'
-              echo '    afterEvaluate {'
-              echo '        extensions.findByType(org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension::class.java)?.apply {'
-              echo '            jvmToolchain(17)'
-              echo '        }'
-              echo '        extensions.findByType(com.android.build.gradle.BaseExtension::class.java)?.apply {'
-              echo '            compileOptions {'
-              echo '                sourceCompatibility = JavaVersion.VERSION_17'
-              echo '                targetCompatibility = JavaVersion.VERSION_17'
-              echo '            }'
-              echo '        }'
-              echo '    }'
-              echo '}'
-            } >> "$ROOT_KTS"
-          elif [ -f "$ROOT_GROOVY" ]; then
-            echo "✅ إضافة توحيد JVM Target لـ Groovy DSL"
-            {
-              echo ''
-              echo 'subprojects {'
-              echo '    afterEvaluate { proj ->'
-              echo '        if (proj.plugins.hasPlugin("com.android.library") || proj.plugins.hasPlugin("com.android.application")) {'
-              echo '            proj.android {'
-              echo '                compileOptions {'
-              echo '                    sourceCompatibility JavaVersion.VERSION_17'
-              echo '                    targetCompatibility JavaVersion.VERSION_17'
-              echo '                }'
-              echo '            }'
-              echo '        }'
-              echo '        proj.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {'
-              echo '            kotlinOptions {'
-              echo '                jvmTarget = "17"'
-              echo '            }'
-              echo '        }'
-              echo '        proj.plugins.withId("org.jetbrains.kotlin.android") {'
-              echo '            proj.extensions.getByName("kotlin").jvmToolchain(17)'
-              echo '        }'
-              echo '    }'
-              echo '}'
-            } >> "$ROOT_GROOVY"
-          else
-            echo "❌ مفيش android/build.gradle ولا build.gradle.kts في الروت"
-            exit 1
-          fi
+          dependency = '    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
 
-      - name: تثبيت الباكدجات
+          if "desugar_jdk_libs" not in s:
+              if "dependencies {" in s:
+                  s = s.replace(
+                      "dependencies {",
+                      "dependencies {\n" + dependency,
+                      1
+                  )
+              else:
+                  s += "\n\ndependencies {\n" + dependency + "\n}\n"
+
+          p.write_text(s)
+          PY
+
+      - name: Get dependencies
         working-directory: photo_enhancer_4k
         run: flutter pub get
 
-      - name: فحص الكود (تحذيرات بسيطة متوقفش الـ build)
+      - name: Analyze
         working-directory: photo_enhancer_4k
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
         continue-on-error: true
 
-      - name: تشغيل الاختبارات
+      - name: Run tests
         working-directory: photo_enhancer_4k
         run: flutter test
 
-      - name: بناء APK (Release)
+      - name: Clean
         working-directory: photo_enhancer_4k
-        run: flutter build apk --release --split-per-abi
+        run: flutter clean
 
-      - name: رفع الـ APK كـ Artifact
+      - name: Build APK
+        working-directory: photo_enhancer_4k
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: photo-enhancer-4k-apk
+          name: photo-enhancer-4k-apks
           path: photo_enhancer_4k/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
           retention-days: 30
