@@ -8,37 +8,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: photo_enhancer_4k
 
     steps:
       - name: Checkout الكود
         uses: actions/checkout@v4
-        with:
-          # الخطوات الجاية شغالة جوه photo_enhancer_4k/ اللي لسه مش موجود،
-          # فبنرجع للـ root مؤقتًا في خطوة فك الضغط بس
-          path: repo
 
-      - name: التأكد من وجود الملف المضغوط
-        working-directory: repo
+      # فك ضغط الملف اللي رفعته على الريبو
+      - name: فك الضغط
         run: |
           if [ ! -f "photo_enhancer_4k.zip" ]; then
             echo "❌ ملف photo_enhancer_4k.zip مش موجود في جذر الريبو."
-            echo "تأكد إنك رفعته بنفس الاسم ده بالظبط، أو غيّر الاسم هنا."
             exit 1
           fi
-          echo "✅ الملف موجود."
-
-      - name: فك الضغط
-        working-directory: repo
-        run: |
           unzip -o photo_enhancer_4k.zip -d .
           test -f photo_enhancer_4k/pubspec.yaml || {
-            echo "❌ فك الضغط تم لكن pubspec.yaml مش موجود — تأكد من محتوى الملف."
+            echo "❌ فك الضغط تم لكن pubspec.yaml مش موجود جوه المجلد."
             exit 1
           }
-          mv photo_enhancer_4k ../photo_enhancer_4k
 
       - name: تثبيت Java
         uses: actions/setup-java@v4
@@ -46,21 +32,35 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: تثبيت Flutter SDK
+      # من غير flutter-version ثابت — بتاخد أحدث نسخة Stable
+      # (النسخة القديمة 3.24.0 فيها باج بيبوظ gal package)
+      - name: تثبيت أحدث Flutter SDK (Stable)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
           channel: "stable"
           cache: true
 
       - name: توليد ملفات المنصّات (android) لو مش موجودة
+        working-directory: photo_enhancer_4k
         run: |
           if [ ! -d "android" ]; then
             echo "android/ مش موجود — بيتولد الآن..."
             flutter create --platforms=android --org com.lahan .
+          else
+            echo "android/ موجود بالفعل."
           fi
 
+      - name: ضبط compileSdk/targetSdk صراحة
+        working-directory: photo_enhancer_4k
+        run: |
+          GRADLE_PROPS=android/gradle.properties
+          grep -q "flutter.compileSdkVersion" "$GRADLE_PROPS" 2>/dev/null || \
+            echo "flutter.compileSdkVersion=35" >> "$GRADLE_PROPS"
+          grep -q "flutter.targetSdkVersion" "$GRADLE_PROPS" 2>/dev/null || \
+            echo "flutter.targetSdkVersion=35" >> "$GRADLE_PROPS"
+
       - name: تفعيل Multidex + Core Library Desugaring (مطلوبة لـ ML Kit)
+        working-directory: photo_enhancer_4k
         run: |
           GRADLE=android/app/build.gradle
           if ! grep -q "multiDexEnabled" "$GRADLE"; then
@@ -74,13 +74,20 @@ jobs:
           fi
 
       - name: تثبيت الباكدجات
+        working-directory: photo_enhancer_4k
         run: flutter pub get
 
-      - name: فحص الكود (بدون إيقاف الـ build لو فيه تحذيرات بسيطة)
+      - name: فحص الكود (تحذيرات بسيطة متوقفش الـ build)
+        working-directory: photo_enhancer_4k
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
         continue-on-error: true
 
+      - name: تشغيل الاختبارات
+        working-directory: photo_enhancer_4k
+        run: flutter test
+
       - name: بناء APK (Release)
+        working-directory: photo_enhancer_4k
         run: flutter build apk --release --split-per-abi
 
       - name: رفع الـ APK كـ Artifact
