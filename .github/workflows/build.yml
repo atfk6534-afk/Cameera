@@ -24,9 +24,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           test -f photo_enhancer_4k.zip
+
           rm -rf photo_enhancer_4k
           unzip -q photo_enhancer_4k.zip -d .
+
           test -f photo_enhancer_4k/pubspec.yaml
 
       - name: Setup Java 17
@@ -43,6 +46,7 @@ jobs:
 
       - name: Generate Android platform
         working-directory: photo_enhancer_4k
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -66,10 +70,10 @@ jobs:
             -o assets/models/realesr-general-x4v3.onnx \
             "$MODEL_URL"
 
-          echo "$MODEL_SHA256  assets/models/realesr-general-x4v3.onnx" | sha256sum -c -
+          echo "$MODEL_SHA256  assets/models/realesr-general-x4v3.onnx" \
+            | sha256sum -c -
 
           test -s assets/models/realesr-general-x4v3.onnx
-          ls -lh assets/models/realesr-general-x4v3.onnx
 
       - name: Configure Android
         working-directory: photo_enhancer_4k
@@ -90,9 +94,13 @@ jobs:
         working-directory: photo_enhancer_4k
         run: flutter pub get
 
-      - name: Generate app icon
+      - name: Generate Android app icon
         working-directory: photo_enhancer_4k
-        run: dart run flutter_launcher_icons
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dart run flutter_launcher_icons
 
       - name: Analyze
         working-directory: photo_enhancer_4k
